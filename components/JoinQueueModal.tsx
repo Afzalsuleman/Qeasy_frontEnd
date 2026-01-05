@@ -9,6 +9,7 @@ import TextInput from "./TextInput";
 import OTPInput from "./OTPInput";
 import Button from "./Button";
 import LoadingSpinner from "./LoadingSpinner";
+import Celebration from "./Celebration";
 import { api } from "@/services/api";
 import { API_ENDPOINTS } from "@/services/constants";
 import { storage } from "@/services/storage";
@@ -16,7 +17,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { isValidEmail } from "@/utils/helpers";
 import { handleApiError } from "@/services/errors";
 
-type Step = "email" | "otp" | "joining";
+type Step = "email" | "otp" | "joining" | "celebrating";
 
 interface ShopData {
   id: string;
@@ -49,6 +50,7 @@ export default function JoinQueueModal({
   const [otpError, setOtpError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
 
   // Reset state when modal closes
   const handleClose = () => {
@@ -59,8 +61,15 @@ export default function JoinQueueModal({
     setEmailError("");
     setOtpError("");
     setError("");
+    setSuccessMessage("");
     setIsLoading(false);
     onClose();
+  };
+
+  // Handle celebration complete
+  const handleCelebrationComplete = () => {
+    handleClose();
+    router.push(`/status?shopId=${shopData.id}`);
   };
 
   // Validate email
@@ -113,19 +122,31 @@ export default function JoinQueueModal({
 
       // Join queue
       setStep("joining");
-      const response = await api.post<{ token: string; queueId: string }>(
+      const response = await api.post<{
+        shopId: string;
+        shopName: string;
+        userId: string;
+        userName: string;
+        userEmail: string;
+        position: number;
+        status: string;
+        peopleAhead: number;
+        estimatedWaitTimeMinutes: number;
+        joinedAt: string;
+        message: string;
+      }>(
         API_ENDPOINTS.QUEUE.JOIN,
-        { shopId: shopData.id, email },
+        { shopId: shopData.id },
         true // requires auth
       );
 
-      // Store queue token
-      const { token: queueToken } = response.data;
-      storage.setQueueToken(queueToken);
+      // Store queue data
+      storage.setQueueData(response.data);
+      storage.setShopId(response.data.shopId);
 
-      // Close modal and redirect to status page
-      handleClose();
-      router.push(`/status?queueId=${response.data.queueId}`);
+      // Show celebration
+      setSuccessMessage(response.data.message || "You have successfully joined the queue!");
+      setStep("celebrating");
     } catch (err) {
       const errorMessage = handleApiError(err);
       setOtpError(errorMessage);
@@ -154,7 +175,8 @@ export default function JoinQueueModal({
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} size="md">
+    <>
+    <Modal isOpen={isOpen && step !== "celebrating"} onClose={handleClose} size="md">
       <div className="space-y-6">
         {/* Shop Info */}
         <ShopInfo
@@ -282,6 +304,15 @@ export default function JoinQueueModal({
         )}
       </div>
     </Modal>
+
+    {/* Celebration - rendered outside modal */}
+    {step === "celebrating" && successMessage && (
+      <Celebration
+        message={successMessage}
+        onComplete={handleCelebrationComplete}
+      />
+    )}
+    </>
   );
 }
 

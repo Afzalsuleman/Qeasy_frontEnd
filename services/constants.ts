@@ -14,7 +14,9 @@ export const API_ENDPOINTS = {
   },
   // Queue endpoints
   QUEUE: {
-    JOIN: "/queue/join",
+    JOIN: "/api/v1/queue/join",
+    POSITION: "/api/v1/queue/position",
+    LEAVE: "/api/v1/queue/leave",
     STATUS: "/queue/status",
     CONFIRM_ARRIVAL: "/queue/confirm-arrival",
     CANCEL: "/queue/cancel",

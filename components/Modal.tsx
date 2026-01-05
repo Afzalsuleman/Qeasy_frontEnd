@@ -52,15 +52,16 @@ export default function Modal({
       onClick={onClose}
     >
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-black bg-opacity-50 transition-opacity" />
+      <div className="fixed inset-0 bg-black bg-opacity-40 transition-opacity backdrop-blur-sm" />
 
       {/* Modal */}
       <div className="flex min-h-full items-center justify-center p-4">
         <div
           className={`
-            relative bg-white rounded-lg shadow-xl
+            relative bg-white rounded-xl shadow-2xl
             w-full ${sizeClasses[size]}
             transform transition-all
+            border border-gray-200
           `}
           onClick={(e) => e.stopPropagation()}
         >

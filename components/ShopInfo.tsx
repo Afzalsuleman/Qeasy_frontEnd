@@ -18,7 +18,7 @@ export default function ShopInfo({
   shopPhone,
 }: ShopInfoProps) {
   return (
-    <div className="w-full bg-white rounded-lg shadow-md p-6 mb-6">
+    <div className="w-full bg-white rounded-xl shadow-sm p-6 mb-6 border border-gray-200">
       <h1 className="text-3xl font-bold text-gray-900 mb-4">{shopName}</h1>
       
       {shopAddress && (
@@ -41,7 +41,7 @@ export default function ShopInfo({
         
         <div className="flex-1 text-right">
           <p className="text-sm text-gray-500 mb-1">Est. Wait Time</p>
-          <p className="text-2xl font-bold text-blue-600">
+          <p className="text-2xl font-bold text-[#4f46e5]">
             {estimatedWaitTime} min
           </p>
         </div>

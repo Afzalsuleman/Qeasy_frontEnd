@@ -105,6 +105,18 @@ class StorageService {
   removeShopId(): void {
     this.removeItem(STORAGE_KEYS.SHOP_ID);
   }
+
+  setQueueData<T>(data: T): void {
+    this.setItem("queue_data", data);
+  }
+
+  getQueueData<T>(): T | null {
+    return this.getItem<T>("queue_data");
+  }
+
+  removeQueueData(): void {
+    this.removeItem("queue_data");
+  }
 }
 
 export const storage = new StorageService();

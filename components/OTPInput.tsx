@@ -85,11 +85,12 @@ export default function OTPInput({
               w-12 h-14
               text-center
               text-2xl font-bold
-              border-2 rounded-lg
+              text-gray-900
+              border rounded-lg
               transition-all duration-200
-              ${error ? "border-red-500" : "border-gray-300"}
-              focus:border-blue-500 focus:outline-none
-              disabled:bg-gray-100 disabled:cursor-not-allowed
+              ${error ? "border-red-400" : "border-gray-200"}
+              focus:border-[#4f46e5] focus:outline-none focus:ring-2 focus:ring-[#818cf8]
+              disabled:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60
             `}
           />
         ))}

@@ -38,12 +38,12 @@ export default function EmailInput({
   return (
     <div className="w-full">
       <div
-        className={`
+          className={`
           relative flex items-center
-          border-2 rounded-lg
+          border rounded-lg
           transition-all duration-200
-          ${isFocused ? "border-blue-500" : "border-gray-300"}
-          ${showError ? "border-red-500" : ""}
+          ${isFocused ? "border-[#4f46e5] shadow-sm" : "border-gray-200"}
+          ${showError ? "border-red-400" : ""}
           ${disabled ? "bg-gray-100 cursor-not-allowed" : "bg-white"}
         `}
       >
@@ -58,9 +58,11 @@ export default function EmailInput({
           className={`
             w-full px-4 py-3
             text-lg
+            text-gray-900
+            placeholder:text-gray-400
             outline-none
             bg-transparent
-            ${disabled ? "cursor-not-allowed" : ""}
+            ${disabled ? "cursor-not-allowed opacity-60" : ""}
           `}
         />
       </div>

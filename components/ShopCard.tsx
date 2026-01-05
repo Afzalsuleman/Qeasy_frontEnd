@@ -29,7 +29,7 @@ export default function ShopCard({
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-200">
+    <div className="bg-white rounded-xl shadow-sm overflow-hidden hover:shadow-md transition-all duration-200 border border-gray-200">
       {imageUrl && (
         <div className="w-full h-48 bg-gray-200 overflow-hidden">
           <img
@@ -65,7 +65,7 @@ export default function ShopCard({
           
           <div className="text-right">
             <p className="text-xs text-gray-500 mb-1">Est. Wait Time</p>
-            <p className="text-lg font-semibold text-blue-600">
+            <p className="text-lg font-semibold text-[#4f46e5]">
               {estimatedWaitTime} min
             </p>
           </div>
