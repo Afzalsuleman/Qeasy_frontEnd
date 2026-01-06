@@ -3,7 +3,7 @@ import "./globals.css";
 import { Providers } from "@/components/Providers";
 
 export const metadata: Metadata = {
-  title: "Smart Queue - Queue Management System",
+  title: "Qeasy - Queue Management System",
   description: "Join and manage queues with ease",
 };
 

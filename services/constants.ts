@@ -17,6 +17,7 @@ export const API_ENDPOINTS = {
     JOIN: "/api/v1/queue/join",
     POSITION: "/api/v1/queue/position",
     LEAVE: "/api/v1/queue/leave",
+    CALL_NEXT: "/api/v1/queue/call-next",
     STATUS: "/queue/status",
     CONFIRM_ARRIVAL: "/queue/confirm-arrival",
     CANCEL: "/queue/cancel",
@@ -24,6 +25,7 @@ export const API_ENDPOINTS = {
   // Shop endpoints
   SHOP: {
     LIST: "/api/v1/shops",
+    CREATE: "/api/v1/shops",
     INFO: "/shop/info",
     DASHBOARD: "/shop/dashboard",
     CALL_NEXT: "/shop/call-next",
@@ -31,6 +33,15 @@ export const API_ENDPOINTS = {
     MARK_SERVED: "/shop/mark-served",
     ADD_WALKIN: "/shop/add-walkin",
     STATS: "/shop/stats",
+  },
+  // Analytics endpoints
+  ANALYTICS: {
+    SHOP: "/api/v1/analytics/shop",
+    SHOP_TODAY: "/api/v1/analytics/shop",
+  },
+  // Admin endpoints
+  ADMIN: {
+    ONBOARD_SHOP_OWNER: "/api/v1/admin/shop-owners",
   },
 } as const;
 

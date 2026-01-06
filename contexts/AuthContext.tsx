@@ -10,12 +10,13 @@ import { storage } from "@/services/storage";
 import { STORAGE_KEYS } from "@/services/constants";
 import { api } from "@/services/api";
 import { API_ENDPOINTS } from "@/services/constants";
+import { decodeJWT } from "@/utils/jwt";
 
 export interface User {
   id: string;
   email: string;
   name?: string;
-  role?: "customer" | "shop_owner";
+  role?: "customer" | "shop_owner" | "admin";
 }
 
 export interface AuthState {
@@ -70,22 +71,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /**
-   * Login with email and password (for shop owners)
+   * Login with email and password (for shop owners and admin)
    */
   const login = useCallback(async (email: string, password: string) => {
     try {
       setState((prev) => ({ ...prev, isLoading: true }));
 
       const response = await api.post<{
+        userId: string;
+        email: string;
+        name: string;
         token: string;
-        user: User;
+        message: string;
+        expiresIn: number;
       }>(
         API_ENDPOINTS.AUTH.LOGIN,
         { email, password },
         false
       );
 
-      const { token, user } = response.data;
+      const { token, userId, email: userEmail, name } = response.data;
+
+      // Decode token to get role
+      const decodedToken = decodeJWT(token);
+      let userRole: "customer" | "shop_owner" | "admin" = "shop_owner";
+      
+      if (decodedToken?.role) {
+        const role = decodedToken.role.toUpperCase();
+        if (role === "ADMIN") {
+          userRole = "admin";
+        } else if (role === "SHOP_OWNER") {
+          userRole = "shop_owner";
+        } else {
+          userRole = "customer";
+        }
+      }
+
+      // Map API response to User interface
+      const user: User = {
+        id: userId,
+        email: userEmail,
+        name: name,
+        role: userRole,
+      };
 
       storage.setAuthToken(token);
       storage.setUserData(user);
