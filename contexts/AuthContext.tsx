@@ -27,9 +27,10 @@ export interface AuthState {
 }
 
 interface AuthContextType extends AuthState {
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<{ passwordSet: boolean }>;
   loginWithOTP: (email: string, otp: string) => Promise<void>;
   sendOTP: (email: string) => Promise<void>;
+  changePassword: (newPassword: string, confirmPassword: string) => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (user: Partial<User>) => void;
 }
@@ -84,13 +85,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         token: string;
         message: string;
         expiresIn: number;
+        passwordSet: boolean;
       }>(
         API_ENDPOINTS.AUTH.LOGIN,
         { email, password },
         false
       );
 
-      const { token, userId, email: userEmail, name } = response.data;
+      const { token, userId, email: userEmail, name, passwordSet } = response.data;
 
       // Decode token to get role
       const decodedToken = decodeJWT(token);
@@ -124,6 +126,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isAuthenticated: true,
         isLoading: false,
       });
+
+      // Return passwordSet status
+      return { passwordSet: passwordSet ?? true };
     } catch (error) {
       setState((prev) => ({ ...prev, isLoading: false }));
       throw error;
@@ -186,6 +191,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
     } catch (error) {
       setState((prev) => ({ ...prev, isLoading: false }));
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Change password
+   */
+  const changePassword = useCallback(async (newPassword: string, confirmPassword: string) => {
+    try {
+      await api.post(
+        API_ENDPOINTS.AUTH.CHANGE_PASSWORD,
+        { newPassword, confirmPassword },
+        true // requires auth
+      );
+    } catch (error) {
       throw error;
     }
   }, []);
@@ -254,6 +274,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     login,
     loginWithOTP,
     sendOTP,
+    changePassword,
     logout,
     updateUser,
   };

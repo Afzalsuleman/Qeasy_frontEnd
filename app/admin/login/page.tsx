@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import TextInput from "@/components/TextInput";
 import Button from "@/components/Button";
 import LoadingSpinner from "@/components/LoadingSpinner";
+import Modal from "@/components/Modal";
 import { api } from "@/services/api";
 import { API_ENDPOINTS } from "@/services/constants";
 import { storage } from "@/services/storage";
@@ -13,7 +14,7 @@ import { handleApiError } from "@/services/errors";
 
 export default function AdminLoginPage() {
   const router = useRouter();
-  const { login, user } = useAuth();
+  const { login, changePassword, logout } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,6 +22,15 @@ export default function AdminLoginPage() {
   const [passwordError, setPasswordError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  
+  // Password reset modal state
+  const [showPasswordReset, setShowPasswordReset] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [newPasswordError, setNewPasswordError] = useState("");
+  const [confirmPasswordError, setConfirmPasswordError] = useState("");
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+  const [resetError, setResetError] = useState("");
 
   const validateForm = (): boolean => {
     let isValid = true;
@@ -52,7 +62,14 @@ export default function AdminLoginPage() {
       setError("");
 
       // Login using auth context
-      await login(email, password);
+      const loginResult = await login(email, password);
+
+      // Check if password needs to be reset
+      if (!loginResult.passwordSet) {
+        setShowPasswordReset(true);
+        setIsLoading(false);
+        return;
+      }
 
       // Wait a bit for state to update, then redirect based on role
       setTimeout(() => {
@@ -74,6 +91,70 @@ export default function AdminLoginPage() {
       setError(errorMessage);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const validatePasswordReset = (): boolean => {
+    let isValid = true;
+    setNewPasswordError("");
+    setConfirmPasswordError("");
+
+    if (!newPassword.trim()) {
+      setNewPasswordError("New password is required");
+      isValid = false;
+    } else if (newPassword.length < 8) {
+      setNewPasswordError("Password must be at least 8 characters");
+      isValid = false;
+    }
+
+    if (!confirmPassword.trim()) {
+      setConfirmPasswordError("Please confirm your password");
+      isValid = false;
+    } else if (newPassword !== confirmPassword) {
+      setConfirmPasswordError("Passwords do not match");
+      isValid = false;
+    }
+
+    return isValid;
+  };
+
+  const handlePasswordReset = async () => {
+    if (!validatePasswordReset()) return;
+
+    try {
+      setIsResettingPassword(true);
+      setResetError("");
+
+      // Change password
+      await changePassword(newPassword, confirmPassword);
+
+      // Close the modal
+      setShowPasswordReset(false);
+      setNewPassword("");
+      setConfirmPassword("");
+      setNewPasswordError("");
+      setConfirmPasswordError("");
+      
+      // Wait a bit for state to update, then redirect based on role
+      setTimeout(() => {
+        // Check role from storage since context might not be updated yet
+        const userData = storage.getUserData<{ role?: string }>();
+        const role = userData?.role;
+        
+        if (role === "admin") {
+          router.push("/admin/dashboard");
+        } else if (role === "shop_owner") {
+          router.push("/dashboard");
+        } else {
+          // Default to admin dashboard for login page
+          router.push("/admin/dashboard");
+        }
+      }, 200);
+    } catch (err) {
+      const errorMessage = handleApiError(err);
+      setResetError(errorMessage);
+    } finally {
+      setIsResettingPassword(false);
     }
   };
 
@@ -134,6 +215,63 @@ export default function AdminLoginPage() {
           </div>
         </div>
       </div>
+
+      {/* Password Reset Modal */}
+      <Modal
+        isOpen={showPasswordReset}
+        onClose={() => {}} // Prevent closing - user must reset password
+        size="md"
+      >
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">
+              Reset Your Password
+            </h2>
+            <p className="text-gray-600">
+              Your password has not been set. Please create a new password to continue.
+            </p>
+          </div>
+
+          {resetError && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-800">{resetError}</p>
+            </div>
+          )}
+
+          <div className="space-y-4">
+            <TextInput
+              value={newPassword}
+              onChange={setNewPassword}
+              label="New Password *"
+              type="password"
+              placeholder="Enter new password (min. 8 characters)"
+              error={newPasswordError}
+              disabled={isResettingPassword}
+            />
+
+            <TextInput
+              value={confirmPassword}
+              onChange={setConfirmPassword}
+              label="Confirm Password *"
+              type="password"
+              placeholder="Confirm new password"
+              error={confirmPasswordError}
+              disabled={isResettingPassword}
+            />
+          </div>
+
+          <div className="flex justify-end">
+            <Button
+              onClick={handlePasswordReset}
+              variant="primary"
+              disabled={isResettingPassword}
+              isLoading={isResettingPassword}
+            >
+              Reset Password
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

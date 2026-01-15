@@ -1,17 +1,18 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/Button";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import Modal from "@/components/Modal";
 import TextInput from "@/components/TextInput";
 import ToastContainer from "@/components/ToastContainer";
-import AnalyticsChart from "@/components/AnalyticsChart";
+import NotificationBell from "@/components/NotificationBell";
 import { api } from "@/services/api";
 import { API_ENDPOINTS } from "@/services/constants";
 import { useAuth } from "@/contexts/AuthContext";
 import { handleApiError } from "@/services/errors";
+import { wsService } from "@/services/websocket";
 
 interface Shop {
   id: string;
@@ -30,33 +31,19 @@ interface Shop {
   updatedAt: string;
 }
 
-interface AnalyticsData {
-  shopId: string;
-  shopName: string;
-  totalCustomers?: number;
-  totalVisitors?: number;
-  averageWaitTime?: number | null;
-  averageWaitTimeMinutes?: number | null;
-  currentQueueSize: number;
-  servedToday?: number;
-  servedCount?: number;
-  noShowCount?: number;
-  estimatedWaitTimeMinutes?: number | null;
-  completionRate?: number | null;
-  noShowRate?: number | null;
-  maxQueueSize?: number | null;
-  avgServiceTimeMinutes?: number | null;
-  analyzedDays?: number;
-  startDate?: string;
-  endDate?: string;
-  [key: string]: unknown;
-}
-
 interface ToastItem {
   id: string;
   message: string;
   type?: "success" | "error" | "info";
   duration?: number;
+}
+
+interface Notification {
+  id: string;
+  message: string;
+  type: "joined" | "left" | "called";
+  timestamp: Date;
+  read: boolean;
 }
 
 export default function ShopOwnerDashboardPage() {
@@ -65,15 +52,13 @@ export default function ShopOwnerDashboardPage() {
 
   const [shops, setShops] = useState<Shop[]>([]);
   const [selectedShop, setSelectedShop] = useState<Shop | null>(null);
-  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false);
   const [error, setError] = useState("");
   const [showAddShopModal, setShowAddShopModal] = useState(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [isCallingNext, setIsCallingNext] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
 
   // Shop form state
   const [shopName, setShopName] = useState("");
@@ -90,18 +75,214 @@ export default function ShopOwnerDashboardPage() {
     maxQueueSize?: string;
   }>({});
 
+  // WebSocket connection for real-time queue updates
+  const [isConnected, setIsConnected] = useState(false);
+
+  // Connect/reconnect WebSocket when shop changes
+  useEffect(() => {
+    if (!selectedShop || !isAuthenticated) {
+      if (wsService.isConnected()) {
+        wsService.disconnect();
+        setIsConnected(false);
+      }
+      return;
+    }
+
+    let unsubscribeQueueTopic: (() => void) | null = null;
+    let unsubscribeCurrentTopic: (() => void) | null = null;
+
+    // Connect to WebSocket (STOMP)
+    const connectWebSocket = async () => {
+      try {
+        // Disconnect existing connection first
+        if (wsService.isConnected()) {
+          wsService.disconnect();
+          setIsConnected(false);
+        }
+
+        // Wait a bit before reconnecting
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        // Connect to STOMP WebSocket
+        await wsService.connect("");
+        console.log("WebSocket connected via STOMP");
+        
+        // Wait a bit to ensure connection is fully established
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        
+        // Verify connection is active before subscribing
+        if (!wsService.isConnected()) {
+          console.error("WebSocket connection not active after connect");
+          setIsConnected(false);
+          return;
+        }
+        
+        setIsConnected(true);
+
+        const shopId = selectedShop.id;
+        const queueTopic = `/topic/queue/${shopId}`;
+        const currentTopic = `/topic/queue/${shopId}/current`;
+
+        // Subscribe to main queue updates (individual events)
+        unsubscribeQueueTopic = wsService.subscribe(queueTopic, (data: unknown) => {
+          console.log("Queue update received:", data);
+          
+          const queueData = data as {
+            status?: string;
+            userName?: string;
+            userId?: string;
+            shopId?: string;
+            shopName?: string;
+            position?: number;
+            peopleAhead?: number;
+            totalInQueue?: number;
+            estimatedWaitTimeMinutes?: number;
+          };
+
+          const status = queueData.status || "";
+          const userName = queueData.userName || "";
+
+          // Create notification based on status
+          if (status === "JOINED" || status === "joined") {
+            const notification: Notification = {
+              id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+              message: `${userName || "A customer"} joined the queue`,
+              type: "joined",
+              timestamp: new Date(),
+              read: false,
+            };
+            setNotifications((prev) => [notification, ...prev]);
+          } else if (status === "LEFT" || status === "left") {
+            const notification: Notification = {
+              id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+              message: `${userName || "A customer"} left the queue`,
+              type: "left",
+              timestamp: new Date(),
+              read: false,
+            };
+            setNotifications((prev) => [notification, ...prev]);
+          } else if (status === "CALLED" || status === "called") {
+            const notification: Notification = {
+              id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+              message: `${userName || "A customer"} has been called`,
+              type: "called",
+              timestamp: new Date(),
+              read: false,
+            };
+            setNotifications((prev) => [notification, ...prev]);
+          }
+
+          // Refresh shop data to get updated queue size
+          refreshShopData();
+        });
+
+        // Subscribe to current queue statistics (aggregated stats)
+        unsubscribeCurrentTopic = wsService.subscribe(currentTopic, (data: unknown) => {
+          console.log("Current queue stats received:", data);
+          
+          const statsData = data as {
+            shopId?: string;
+            shopName?: string;
+            currentQueueSize?: number;
+            joinedCount?: number;
+            calledCount?: number;
+            estimatedWaitTimeMinutes?: number;
+            maxQueueSize?: number;
+            avgServiceTimeMinutes?: number;
+          };
+
+          // Update selected shop with new statistics
+          if (statsData.shopId === selectedShop.id) {
+            setSelectedShop((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                currentQueueSize: statsData.currentQueueSize ?? prev.currentQueueSize,
+                estimatedWaitTimeMinutes: statsData.estimatedWaitTimeMinutes ?? prev.estimatedWaitTimeMinutes,
+              };
+            });
+
+            // Also update in shops list
+            setShops((prevShops) =>
+              prevShops.map((shop) =>
+                shop.id === statsData.shopId
+                  ? {
+                      ...shop,
+                      currentQueueSize: statsData.currentQueueSize ?? shop.currentQueueSize,
+                      estimatedWaitTimeMinutes: statsData.estimatedWaitTimeMinutes ?? shop.estimatedWaitTimeMinutes,
+                    }
+                  : shop
+              )
+            );
+          }
+        });
+      } catch (err) {
+        console.error("Failed to connect WebSocket:", err);
+        setIsConnected(false);
+      }
+    };
+
+    // Helper function to refresh shop data
+    const refreshShopData = async () => {
+      try {
+        const response = await api.get<Shop[]>(
+          API_ENDPOINTS.SHOP.LIST,
+          true
+        );
+        const userShops = response.data.filter(
+          (shop) => shop.ownerId === user?.id
+        );
+        setShops(userShops);
+        
+        const updatedShop = userShops.find((s) => s.id === selectedShop.id);
+        if (updatedShop) {
+          setSelectedShop(updatedShop);
+        }
+      } catch (err) {
+        console.error("Error refreshing shops:", err);
+      }
+    };
+
+    // Listen for connection events
+    const handleConnectionEstablished = () => {
+      setIsConnected(true);
+    };
+
+    const handleConnectionClosed = () => {
+      setIsConnected(false);
+    };
+
+    wsService.on("CONNECTION_ESTABLISHED", handleConnectionEstablished);
+    wsService.on("CONNECTION_CLOSED", handleConnectionClosed);
+
+    // Connect when shop is selected
+    connectWebSocket();
+
+    return () => {
+      // Unsubscribe from topics
+      if (unsubscribeQueueTopic) {
+        unsubscribeQueueTopic();
+      }
+      if (unsubscribeCurrentTopic) {
+        unsubscribeCurrentTopic();
+      }
+      
+      wsService.off("CONNECTION_ESTABLISHED", handleConnectionEstablished);
+      wsService.off("CONNECTION_CLOSED", handleConnectionClosed);
+    };
+  }, [selectedShop?.id, isAuthenticated, user?.id]);
+
   // Redirect if not authenticated or not shop owner
   useEffect(() => {
-    // Wait for auth to finish loading before checking
     if (authLoading) return;
 
-    if (!isAuthenticated) {
+    if (!isAuthenticated || !user) {
       router.push("/admin/login");
       return;
     }
 
-    if (user?.role !== "shop_owner") {
-      if (user?.role === "admin") {
+    if (user.role !== "shop_owner") {
+      if (user.role === "admin") {
         router.push("/admin/dashboard");
       } else {
         router.push("/");
@@ -124,14 +305,11 @@ export default function ShopOwnerDashboardPage() {
           true // requires auth
         );
 
-        // Filter shops owned by this user
         const userShops = response.data.filter(
           (shop) => shop.ownerId === user?.id
         );
         setShops(userShops);
 
-        // If there's at least one shop, select the first one
-        // Analytics will be fetched automatically via the selectedShop useEffect
         if (userShops.length > 0 && !selectedShop) {
           setSelectedShop(userShops[0]);
         }
@@ -147,113 +325,6 @@ export default function ShopOwnerDashboardPage() {
     fetchShops();
   }, [isAuthenticated, user]);
 
-  // Fetch analytics when selected shop changes
-  useEffect(() => {
-    if (!selectedShop || !isAuthenticated || user?.role !== "shop_owner") {
-      return;
-    }
-
-    // Abort any ongoing request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-
-    // Create new AbortController for this request
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-
-    const fetchShopAnalytics = async (shopId: string) => {
-      try {
-        setIsLoadingAnalytics(true);
-        setError("");
-
-        // Fetch both 7-day analytics and today's analytics
-        const [weeklyResponse, todayResponse] = await Promise.all([
-          api.get<AnalyticsData>(
-            `${API_ENDPOINTS.ANALYTICS.SHOP}/${shopId}?days=7`,
-            true
-          ),
-          api.get<AnalyticsData>(
-            `${API_ENDPOINTS.ANALYTICS.SHOP_TODAY}/${shopId}/today`,
-            true
-          ),
-        ]);
-
-        // Check if request was aborted
-        if (abortController.signal.aborted) {
-          return;
-        }
-
-        // Merge today's data with weekly data (today's data takes precedence)
-        // Today's analytics come from: GET /api/v1/analytics/shop/${shopId}/today
-        // Weekly analytics come from: GET /api/v1/analytics/shop/${shopId}?days=7
-        console.log("Today's Analytics API Response:", todayResponse.data);
-        console.log("Weekly Analytics API Response:", weeklyResponse.data);
-        
-        const mergedAnalytics = {
-          ...weeklyResponse.data,
-          ...todayResponse.data, // Today's data overrides weekly data
-        };
-        
-        console.log("Merged Analytics (used for display):", mergedAnalytics);
-        console.log("Served Count from today API:", todayResponse.data.servedCount);
-        console.log("Served Today from today API:", todayResponse.data.servedToday);
-        
-        setAnalytics(mergedAnalytics);
-      } catch (err) {
-        // Don't set error if request was aborted
-        if (abortController.signal.aborted) {
-          return;
-        }
-        const errorMessage = handleApiError(err);
-        setError(errorMessage);
-        console.error("Error fetching analytics:", err);
-      } finally {
-        if (!abortController.signal.aborted) {
-          setIsLoadingAnalytics(false);
-        }
-      }
-    };
-
-    fetchShopAnalytics(selectedShop.id);
-
-    // Cleanup function
-    return () => {
-      abortController.abort();
-    };
-  }, [selectedShop, isAuthenticated, user]);
-
-  // Fetch analytics function (for manual calls like when shop is created)
-  const fetchShopAnalytics = async (shopId: string) => {
-    try {
-      setIsLoadingAnalytics(true);
-      setError("");
-
-      // Fetch both 7-day analytics and today's analytics
-      const [weeklyResponse, todayResponse] = await Promise.all([
-        api.get<AnalyticsData>(
-          `${API_ENDPOINTS.ANALYTICS.SHOP}/${shopId}?days=7`,
-          true
-        ),
-        api.get<AnalyticsData>(
-          `${API_ENDPOINTS.ANALYTICS.SHOP_TODAY}/${shopId}/today`,
-          true
-        ),
-      ]);
-
-      // Merge today's data with weekly data (today's data takes precedence)
-      setAnalytics({
-        ...weeklyResponse.data,
-        ...todayResponse.data,
-      });
-    } catch (err) {
-      const errorMessage = handleApiError(err);
-      setError(errorMessage);
-      console.error("Error fetching analytics:", err);
-    } finally {
-      setIsLoadingAnalytics(false);
-    }
-  };
 
   const validateShopForm = (): boolean => {
     const errors: typeof formErrors = {};
@@ -306,7 +377,6 @@ export default function ShopOwnerDashboardPage() {
       // Add new shop to list
       setShops([...shops, response.data]);
       setSelectedShop(response.data);
-      // Analytics will be fetched automatically via the selectedShop useEffect
 
       // Reset form and close modal
       setShopName("");
@@ -340,7 +410,6 @@ export default function ShopOwnerDashboardPage() {
 
   const handleShopSelect = (shop: Shop) => {
     setSelectedShop(shop);
-    // Analytics will be fetched automatically via the selectedShop useEffect
   };
 
   const handleCallNext = async () => {
@@ -368,78 +437,28 @@ export default function ShopOwnerDashboardPage() {
         },
       ]);
 
-      // Refresh shops list and analytics to get updated queue data
-      if (selectedShop) {
-        // Refresh shops list to get updated queue sizes
-        const refreshShops = async () => {
-          try {
-            const response = await api.get<Shop[]>(
-              API_ENDPOINTS.SHOP.LIST,
-              true
-            );
-            const userShops = response.data.filter(
-              (shop) => shop.ownerId === user?.id
-            );
-            setShops(userShops);
-            
-            // Update selected shop with latest data
-            const updatedShop = userShops.find((s) => s.id === selectedShop.id);
-            if (updatedShop) {
-              setSelectedShop(updatedShop);
-            }
-          } catch (err) {
-            console.error("Error refreshing shops:", err);
+      // Refresh shops list to get updated queue data
+      const refreshShops = async () => {
+        try {
+          const response = await api.get<Shop[]>(
+            API_ENDPOINTS.SHOP.LIST,
+            true
+          );
+          const userShops = response.data.filter(
+            (shop) => shop.ownerId === user?.id
+          );
+          setShops(userShops);
+          
+          const updatedShop = userShops.find((s) => s.id === selectedShop.id);
+          if (updatedShop) {
+            setSelectedShop(updatedShop);
           }
-        };
-
-        // Refresh analytics
-        const fetchShopAnalytics = async (shopId: string) => {
-          try {
-            setIsLoadingAnalytics(true);
-
-            const [weeklyResponse, todayResponse] = await Promise.all([
-              api.get<AnalyticsData>(
-                `${API_ENDPOINTS.ANALYTICS.SHOP}/${shopId}?days=7`,
-                true
-              ),
-              api.get<AnalyticsData>(
-                `${API_ENDPOINTS.ANALYTICS.SHOP_TODAY}/${shopId}/today`,
-                true
-              ),
-            ]);
-
-            const updatedAnalytics = {
-              ...weeklyResponse.data,
-              ...todayResponse.data,
-            };
-            setAnalytics(updatedAnalytics);
-
-            return updatedAnalytics;
-          } catch (err) {
-            console.error("Error refreshing analytics:", err);
-            return null;
-          } finally {
-            setIsLoadingAnalytics(false);
-          }
-        };
-
-        // Refresh both in parallel
-        const [shopsResult, analyticsResult] = await Promise.all([
-          refreshShops(),
-          fetchShopAnalytics(selectedShop.id),
-        ]);
-
-        // Update selectedShop's currentQueueSize from analytics if available
-        if (analyticsResult?.currentQueueSize !== undefined) {
-          setSelectedShop((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              currentQueueSize: analyticsResult.currentQueueSize,
-            };
-          });
+        } catch (err) {
+          console.error("Error refreshing shops:", err);
         }
-      }
+      };
+
+      refreshShops();
     } catch (err) {
       const errorMessage = handleApiError(err);
       setError(errorMessage);
@@ -469,6 +488,18 @@ export default function ShopOwnerDashboardPage() {
     setToasts(toasts.filter((toast) => toast.id !== id));
   };
 
+  const handleMarkNotificationAsRead = (id: string) => {
+    setNotifications((prev) =>
+      prev.map((notif) =>
+        notif.id === id ? { ...notif, read: true } : notif
+      )
+    );
+  };
+
+  const handleClearAllNotifications = () => {
+    setNotifications([]);
+  };
+
   // Show loading while auth is initializing
   if (authLoading) {
     return (
@@ -495,13 +526,28 @@ export default function ShopOwnerDashboardPage() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
-                Analytics Dashboard
+                Queue Management
               </h1>
               <p className="text-gray-600 mt-1 text-sm sm:text-base">
                 Welcome, {user?.name || "Shop Owner"}
               </p>
             </div>
-            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 w-full sm:w-auto">
+            <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-3 w-full sm:w-auto">
+              {/* Notification Bell */}
+              {selectedShop && (
+                <NotificationBell
+                  notifications={notifications}
+                  onMarkAsRead={handleMarkNotificationAsRead}
+                  onClearAll={handleClearAllNotifications}
+                />
+              )}
+              <Button
+                onClick={() => router.push("/dashboard/analytics")}
+                variant="secondary"
+                className="sm:w-auto w-full"
+              >
+                📊 Analytics
+              </Button>
               <Button
                 onClick={() => setShowAddShopModal(true)}
                 variant="primary"
@@ -557,290 +603,100 @@ export default function ShopOwnerDashboardPage() {
           </div>
         )}
 
-        {/* Analytics Cards */}
+        {/* Queue Management Section */}
         {isLoading ? (
           <div className="flex items-center justify-center py-12">
             <LoadingSpinner size="lg" />
           </div>
-        ) : selectedShop && analytics ? (
-          <>
-            {/* Call Next Button Section */}
-            <div className="mb-6 flex justify-center">
-              <Button
-                onClick={handleCallNext}
-                variant="primary"
-                className={`px-8 py-3 text-lg font-semibold shadow-lg ${
-                  (analytics?.currentQueueSize || selectedShop?.currentQueueSize || 0) === 0
-                    ? "bg-gray-400 hover:bg-gray-400 cursor-not-allowed"
-                    : "bg-green-600 hover:bg-green-700"
-                }`}
-                disabled={
-                  isCallingNext ||
-                  (analytics?.currentQueueSize || selectedShop?.currentQueueSize || 0) === 0
-                }
-              >
-                {isCallingNext ? (
-                  <span className="flex items-center">
-                    <LoadingSpinner size="sm" className="mr-2" />
-                    Calling Next Customer...
-                  </span>
-                ) : (
-                  <>
-                    📞 Call Next Customer
-                    {(analytics?.currentQueueSize || selectedShop?.currentQueueSize) ? (
-                      <span className="ml-2 text-sm opacity-90">
-                        ({analytics?.currentQueueSize || selectedShop?.currentQueueSize} in queue)
-                      </span>
-                    ) : null}
-                  </>
-                )}
-              </Button>
+        ) : selectedShop ? (
+          <div className="bg-white rounded-xl shadow-sm p-8 border border-gray-200">
+            <div className="text-center mb-8">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">
+                {selectedShop.name}
+              </h2>
+              {selectedShop.description && (
+                <p className="text-gray-600 mb-4">{selectedShop.description}</p>
+              )}
             </div>
 
-            {/* Key Metrics Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl shadow-sm p-6 border border-blue-200">
-                <p className="text-sm text-blue-600 font-medium mb-1">Current Queue</p>
-                <p className="text-4xl font-bold text-blue-900">
-                  {analytics.currentQueueSize || selectedShop.currentQueueSize}
-                </p>
-                <p className="text-xs text-blue-600 mt-1">
-                  Max: {analytics.maxQueueSize != null
-                    ? analytics.maxQueueSize
-                    : selectedShop.maxQueueSize != null
-                    ? selectedShop.maxQueueSize
-                    : "N/A"}
-                </p>
-              </div>
-              <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl shadow-sm p-6 border border-purple-200">
-                <p className="text-sm text-purple-600 font-medium mb-1">Total Visitors</p>
-                <p className="text-4xl font-bold text-purple-900">
-                  {analytics.totalVisitors || analytics.totalCustomers || 0}
-                </p>
-                <p className="text-xs text-purple-600 mt-1">Last 7 days</p>
-              </div>
-              <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-xl shadow-sm p-6 border border-green-200">
-                <p className="text-sm text-green-600 font-medium mb-1">Served Today</p>
-                <p className="text-4xl font-bold text-green-900">
-                  {analytics.servedCount || analytics.servedToday || 0}
-                </p>
-                {analytics.completionRate != null && (
-                  <p className="text-xs text-green-600 mt-1">
-                    {analytics.completionRate.toFixed(1)}% completion rate
+            {/* Current Queue Status */}
+            <div className="mb-8">
+              <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-6 border border-blue-200 mb-6">
+                <p className="text-sm text-blue-600 font-medium mb-2">Current Queue Status</p>
+                <div className="flex items-baseline justify-center gap-2">
+                  <p className="text-5xl font-bold text-blue-900">
+                    {selectedShop.currentQueueSize}
                   </p>
-                )}
-              </div>
-              <div className="bg-gradient-to-br from-orange-50 to-orange-100 rounded-xl shadow-sm p-6 border border-orange-200">
-                <p className="text-sm text-orange-600 font-medium mb-1">Avg. Wait Time</p>
-                <p className="text-4xl font-bold text-orange-900">
-                  {analytics.averageWaitTimeMinutes != null
-                    ? `${analytics.averageWaitTimeMinutes} min`
-                    : analytics.averageWaitTime != null
-                    ? `${analytics.averageWaitTime} min`
-                    : selectedShop.estimatedWaitTimeMinutes != null
-                    ? `${selectedShop.estimatedWaitTimeMinutes} min`
-                    : "N/A"}
-                </p>
-                {analytics.estimatedWaitTimeMinutes != null && (
-                  <p className="text-xs text-orange-600 mt-1">
-                    Est: {analytics.estimatedWaitTimeMinutes} min
+                  <p className="text-lg text-blue-600">
+                    / {selectedShop.maxQueueSize}
                   </p>
-                )}
-              </div>
-            </div>
-
-            {/* Additional Stats */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-              <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
-                <p className="text-sm text-gray-500 mb-1">No Shows</p>
-                <p className="text-3xl font-bold text-red-600">
-                  {analytics.noShowCount || 0}
-                </p>
-                {analytics.noShowRate != null && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    {analytics.noShowRate.toFixed(1)}% no-show rate
-                  </p>
-                )}
-              </div>
-              <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
-                <p className="text-sm text-gray-500 mb-1">Avg. Service Time</p>
-                <p className="text-3xl font-bold text-indigo-600">
-                  {analytics.avgServiceTimeMinutes != null
-                    ? `${analytics.avgServiceTimeMinutes} min`
-                    : selectedShop.avgServiceTimeMinutes != null
-                    ? `${selectedShop.avgServiceTimeMinutes} min`
-                    : "N/A"}
-                </p>
-              </div>
-              <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
-                <p className="text-sm text-gray-500 mb-1">Queue Utilization</p>
-                <p className="text-3xl font-bold text-gray-900">
-                  {analytics.maxQueueSize != null && analytics.maxQueueSize > 0
-                    ? Math.round(
-                        ((analytics.currentQueueSize || 0) / analytics.maxQueueSize) * 100
-                      )
-                    : selectedShop.maxQueueSize != null && selectedShop.maxQueueSize > 0
-                    ? Math.round(
-                        ((analytics.currentQueueSize || 0) / selectedShop.maxQueueSize) * 100
-                      )
-                    : 0}
-                  %
-                </p>
-                <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
-                  <div
-                    className="bg-[#4f46e5] h-2 rounded-full transition-all"
-                    style={{
-                      width: `${
-                        analytics.maxQueueSize != null && analytics.maxQueueSize > 0
-                          ? Math.min(
-                              ((analytics.currentQueueSize || 0) / analytics.maxQueueSize) * 100,
-                              100
-                            )
-                          : selectedShop.maxQueueSize != null && selectedShop.maxQueueSize > 0
-                          ? Math.min(
-                              ((analytics.currentQueueSize || 0) / selectedShop.maxQueueSize) * 100,
-                              100
-                            )
-                          : 0
-                      }%`,
-                    }}
-                  />
                 </div>
-              </div>
-            </div>
-
-            {/* Charts Section */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-              {/* Service Performance Chart */}
-              <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                  Service Performance
-                </h3>
-                {(() => {
-                  const served = analytics.servedCount || analytics.servedToday || 0;
-                  const noShow = analytics.noShowCount || 0;
-                  const inQueue = analytics.currentQueueSize || 0;
-                  const total = served + noShow + inQueue;
-
-                  if (total === 0) {
-                    return (
-                      <div className="flex items-center justify-center h-[300px]">
-                        <p className="text-gray-500">No data available yet</p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <AnalyticsChart
-                      data={[
-                        {
-                          name: "Served",
-                          value: served,
-                          color: "#10b981",
-                        },
-                        {
-                          name: "No Show",
-                          value: noShow,
-                          color: "#ef4444",
-                        },
-                        {
-                          name: "In Queue",
-                          value: inQueue,
-                          color: "#4f46e5",
-                        },
-                      ]}
-                      type="pie"
-                      dataKey="value"
-                      nameKey="name"
-                    />
-                  );
-                })()}
+                <p className="text-xs text-blue-600 mt-2 text-center">
+                  {selectedShop.currentQueueSize === 0
+                    ? "No customers in queue"
+                    : `${selectedShop.currentQueueSize} customer${selectedShop.currentQueueSize > 1 ? "s" : ""} waiting`}
+                </p>
               </div>
 
-              {/* Queue Status Chart */}
-              <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                  Queue Status
-                </h3>
-                <div className="space-y-4">
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-gray-600">Current Queue</span>
-                      <span className="font-semibold text-gray-900">
-                        {analytics.currentQueueSize || 0} / {analytics.maxQueueSize != null
-                          ? analytics.maxQueueSize
-                          : selectedShop.maxQueueSize != null
-                          ? selectedShop.maxQueueSize
-                          : "N/A"}
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-4">
-                      <div
-                        className="bg-[#4f46e5] h-4 rounded-full transition-all"
-                        style={{
-                          width: `${
-                            analytics.maxQueueSize != null && analytics.maxQueueSize > 0
-                              ? Math.min(
-                                  ((analytics.currentQueueSize || 0) / analytics.maxQueueSize) * 100,
-                                  100
-                                )
-                              : selectedShop.maxQueueSize != null && selectedShop.maxQueueSize > 0
-                              ? Math.min(
-                                  ((analytics.currentQueueSize || 0) / selectedShop.maxQueueSize) * 100,
-                                  100
-                                )
-                              : 0
-                          }%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <div className="pt-4 border-t border-gray-200">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-gray-600">Completion Rate</span>
-                      <span className="text-2xl font-bold text-green-600">
-                        {analytics.completionRate
-                          ? `${analytics.completionRate.toFixed(1)}%`
-                          : "N/A"}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="pt-4 border-t border-gray-200">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-gray-600">No-Show Rate</span>
-                      <span className="text-2xl font-bold text-red-600">
-                        {analytics.noShowRate != null
-                          ? `${analytics.noShowRate.toFixed(1)}%`
-                          : "N/A"}
-                      </span>
-                    </div>
-                  </div>
+              {/* WebSocket Connection Status */}
+              {isConnected && (
+                <div className="flex items-center justify-center gap-2 text-sm text-green-600 mb-4">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  <span>Live updates active</span>
                 </div>
+              )}
+
+              {/* Call Next Button */}
+              <div className="flex justify-center">
+                <Button
+                  onClick={handleCallNext}
+                  variant="primary"
+                  className={`px-8 py-4 text-xl font-semibold shadow-lg ${
+                    selectedShop.currentQueueSize === 0
+                      ? "bg-gray-400 hover:bg-gray-400 cursor-not-allowed"
+                      : "bg-green-600 hover:bg-green-700"
+                  }`}
+                  disabled={isCallingNext || selectedShop.currentQueueSize === 0}
+                >
+                  {isCallingNext ? (
+                    <span className="flex items-center">
+                      <LoadingSpinner size="sm" className="mr-2" />
+                      Calling Next Customer...
+                    </span>
+                  ) : (
+                    <>
+                      📞 Call Next Customer
+                      {selectedShop.currentQueueSize > 0 && (
+                        <span className="ml-2 text-sm opacity-90">
+                          ({selectedShop.currentQueueSize} in queue)
+                        </span>
+                      )}
+                    </>
+                  )}
+                </Button>
               </div>
             </div>
 
             {/* Shop Info */}
-            <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
-              <h2 className="text-xl font-bold text-gray-900 mb-2">
-                {selectedShop.name}
-              </h2>
-              {selectedShop.description && (
-                <p className="text-gray-600 mb-2">{selectedShop.description}</p>
-              )}
-              <div className="flex flex-wrap gap-4 mt-4">
-                <p className="text-sm text-gray-500 flex items-center">
+            <div className="border-t border-gray-200 pt-6">
+              <div className="flex flex-wrap gap-4 justify-center text-sm text-gray-500">
+                <p className="flex items-center">
                   <span className="mr-2">📍</span>
                   {selectedShop.address}
                 </p>
                 {selectedShop.phone && (
-                  <p className="text-sm text-gray-500 flex items-center">
+                  <p className="flex items-center">
                     <span className="mr-2">📞</span>
                     {selectedShop.phone}
                   </p>
                 )}
+                <p className="flex items-center">
+                  <span className="mr-2">⏱️</span>
+                  Avg. Service: {selectedShop.avgServiceTimeMinutes} min
+                </p>
               </div>
             </div>
-          </>
+          </div>
         ) : shops.length === 0 ? (
           <div className="bg-white rounded-xl shadow-sm p-12 border border-gray-200 text-center">
             <p className="text-gray-500 mb-4">You don't have any shops yet</p>
@@ -853,11 +709,7 @@ export default function ShopOwnerDashboardPage() {
           </div>
         ) : (
           <div className="bg-white rounded-xl shadow-sm p-12 border border-gray-200 text-center">
-            {isLoadingAnalytics ? (
-              <LoadingSpinner size="lg" />
-            ) : (
-              <p className="text-gray-500">No analytics data available</p>
-            )}
+            <p className="text-gray-500">Please select a shop</p>
           </div>
         )}
       </main>

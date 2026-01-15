@@ -1,10 +1,12 @@
 /**
- * WebSocket service foundation
- * Handles WebSocket connections and real-time updates
+ * WebSocket service using STOMP protocol
+ * Handles WebSocket connections and real-time updates via STOMP
  */
 
+import { Client, IMessage, StompSubscription } from "@stomp/stompjs";
 import { config } from "./config";
 import { WS_EVENTS } from "./constants";
+import { storage } from "./storage";
 
 export type WebSocketEventType = keyof typeof WS_EVENTS;
 
@@ -15,27 +17,48 @@ export interface WebSocketMessage {
 
 export type WebSocketEventHandler = (data: unknown) => void;
 
+interface TopicSubscription {
+  topic: string;
+  subscription: StompSubscription;
+  handler: (message: IMessage) => void;
+}
+
 class WebSocketService {
-  private ws: WebSocket | null = null;
+  private client: Client | null = null;
   private url: string;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-  private reconnectDelay = 1000; // 1 second
+  private reconnectDelay = 5000; // 5 seconds
   private eventHandlers: Map<WebSocketEventType, Set<WebSocketEventHandler>> =
     new Map();
   private isConnecting = false;
   private shouldReconnect = true;
+  private subscriptions: Map<string, TopicSubscription> = new Map();
+  private connected = false;
 
   constructor() {
-    this.url = config.wsUrl;
+    // Ensure WebSocket URL is correct format for STOMP
+    let baseUrl = config.wsUrl;
+    // Convert http:// to ws:// or https:// to wss://
+    if (baseUrl.startsWith("http://")) {
+      baseUrl = baseUrl.replace("http://", "ws://");
+    } else if (baseUrl.startsWith("https://")) {
+      baseUrl = baseUrl.replace("https://", "wss://");
+    }
+    // Ensure it starts with ws:// or wss://
+    if (!baseUrl.startsWith("ws://") && !baseUrl.startsWith("wss://")) {
+      baseUrl = "ws://" + baseUrl.replace(/^\/+/, "");
+    }
+    // Append /ws endpoint
+    this.url = baseUrl.endsWith("/ws") ? baseUrl : baseUrl + "/ws";
   }
 
   /**
-   * Connect to WebSocket server
+   * Connect to WebSocket server using STOMP
    */
   connect(path: string = ""): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.client?.active) {
         resolve();
         return;
       }
@@ -46,38 +69,48 @@ class WebSocketService {
       }
 
       this.isConnecting = true;
-      const wsUrl = `${this.url}${path}`;
+      const token = storage.getAuthToken();
 
       try {
-        this.ws = new WebSocket(wsUrl);
+        this.client = new Client({
+          brokerURL: this.url,
+          connectHeaders: {
+            Authorization: token ? `Bearer ${token}` : "",
+          },
+          reconnectDelay: this.reconnectDelay,
+          heartbeatIncoming: 4000,
+          heartbeatOutgoing: 4000,
+          onConnect: (frame) => {
+            console.log("STOMP Connected:", frame);
+            this.isConnecting = false;
+            this.connected = true;
+            this.reconnectAttempts = 0;
+            this.emit(WS_EVENTS.CONNECTION_ESTABLISHED, {});
+            resolve();
+          },
+          onStompError: (frame) => {
+            console.error("STOMP Error:", frame);
+            this.isConnecting = false;
+            this.connected = false;
+            this.emit(WS_EVENTS.CONNECTION_ERROR, frame);
+            reject(new Error(frame.headers["message"] || "STOMP connection error"));
+          },
+          onWebSocketError: (event) => {
+            console.error("WebSocket Error:", event);
+            this.isConnecting = false;
+            this.connected = false;
+            this.emit(WS_EVENTS.CONNECTION_ERROR, event);
+            reject(event);
+          },
+          onDisconnect: () => {
+            console.log("STOMP Disconnected");
+            this.connected = false;
+            this.emit(WS_EVENTS.CONNECTION_CLOSED, {});
+            this.handleReconnect(path);
+          },
+        });
 
-        this.ws.onopen = () => {
-          this.isConnecting = false;
-          this.reconnectAttempts = 0;
-          this.emit(WS_EVENTS.CONNECTION_ESTABLISHED, {});
-          resolve();
-        };
-
-        this.ws.onmessage = (event) => {
-          try {
-            const message: WebSocketMessage = JSON.parse(event.data);
-            this.handleMessage(message);
-          } catch (error) {
-            console.error("Error parsing WebSocket message:", error);
-          }
-        };
-
-        this.ws.onerror = (error) => {
-          this.isConnecting = false;
-          this.emit(WS_EVENTS.CONNECTION_ERROR, error);
-          reject(error);
-        };
-
-        this.ws.onclose = () => {
-          this.isConnecting = false;
-          this.emit(WS_EVENTS.CONNECTION_CLOSED, {});
-          this.handleReconnect(path);
-        };
+        this.client.activate();
       } catch (error) {
         this.isConnecting = false;
         reject(error);
@@ -90,25 +123,124 @@ class WebSocketService {
    */
   disconnect(): void {
     this.shouldReconnect = false;
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    
+    // Unsubscribe from all topics
+    this.subscriptions.forEach((sub) => {
+      try {
+        sub.subscription.unsubscribe();
+      } catch (error) {
+        console.error("Error unsubscribing:", error);
+      }
+    });
+    this.subscriptions.clear();
+
+    if (this.client) {
+      this.client.deactivate();
+      this.client = null;
     }
+    this.connected = false;
   }
 
   /**
-   * Send message through WebSocket
+   * Subscribe to a STOMP topic
    */
-  send(type: string, data: unknown): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type, data }));
-    } else {
-      console.warn("WebSocket is not connected. Message not sent:", { type, data });
+  subscribe(
+    topic: string,
+    handler: (data: unknown) => void
+  ): () => void {
+    if (!this.client?.active) {
+      console.warn("STOMP client is not connected. Cannot subscribe to:", topic);
+      return () => {};
+    }
+
+    // If already subscribed, add handler to existing subscription
+    if (this.subscriptions.has(topic)) {
+      const existing = this.subscriptions.get(topic)!;
+      const originalHandler = existing.handler;
+      existing.handler = (message: IMessage) => {
+        originalHandler(message);
+        try {
+          const data = JSON.parse(message.body);
+          handler(data);
+        } catch (error) {
+          console.error("Error parsing STOMP message:", error);
+          handler(message.body);
+        }
+      };
+      return () => {
+        // Unsubscribe logic would need to be more complex here
+        // For now, just remove from map
+        this.subscriptions.delete(topic);
+      };
+    }
+
+    try {
+      const subscription = this.client.subscribe(topic, (message: IMessage) => {
+        try {
+          const data = JSON.parse(message.body);
+          handler(data);
+        } catch (error) {
+          console.error("Error parsing STOMP message:", error);
+          handler(message.body);
+        }
+      });
+
+      this.subscriptions.set(topic, {
+        topic,
+        subscription,
+        handler: (message: IMessage) => {
+          try {
+            const data = JSON.parse(message.body);
+            handler(data);
+          } catch (error) {
+            console.error("Error parsing STOMP message:", error);
+            handler(message.body);
+          }
+        },
+      });
+
+      console.log("Subscribed to topic:", topic);
+
+      // Return unsubscribe function
+      return () => {
+        try {
+          subscription.unsubscribe();
+          this.subscriptions.delete(topic);
+          console.log("Unsubscribed from topic:", topic);
+        } catch (error) {
+          console.error("Error unsubscribing:", error);
+        }
+      };
+    } catch (error) {
+      console.error("Error subscribing to topic:", topic, error);
+      return () => {};
     }
   }
 
   /**
-   * Subscribe to WebSocket events
+   * Send message through WebSocket (STOMP)
+   */
+  send(destination: string, body: unknown): void {
+    if (!this.client?.active) {
+      console.warn("STOMP client is not connected. Message not sent:", {
+        destination,
+        body,
+      });
+      return;
+    }
+
+    try {
+      this.client.publish({
+        destination,
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      console.error("Error sending STOMP message:", error);
+    }
+  }
+
+  /**
+   * Subscribe to WebSocket events (legacy API for compatibility)
    */
   on(event: WebSocketEventType, handler: WebSocketEventHandler): () => void {
     if (!this.eventHandlers.has(event)) {
@@ -136,30 +268,17 @@ class WebSocketService {
    * Get connection status
    */
   isConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.connected && this.client?.active === true;
   }
 
   /**
    * Get connection state
    */
   getState(): number | null {
-    return this.ws?.readyState ?? null;
-  }
-
-  /**
-   * Handle incoming messages
-   */
-  private handleMessage(message: WebSocketMessage): void {
-    const handlers = this.eventHandlers.get(message.type);
-    if (handlers) {
-      handlers.forEach((handler) => {
-        try {
-          handler(message.data);
-        } catch (error) {
-          console.error(`Error in WebSocket event handler for ${message.type}:`, error);
-        }
-      });
-    }
+    if (!this.client) return null;
+    // STOMP client states: 0 = CONNECTING, 1 = OPEN, 2 = CLOSING, 3 = CLOSED
+    // WebSocket states: 0 = CONNECTING, 1 = OPEN, 2 = CLOSING, 3 = CLOSED
+    return this.client.webSocket?.readyState ?? null;
   }
 
   /**
@@ -193,7 +312,9 @@ class WebSocketService {
     const delay = this.reconnectDelay * this.reconnectAttempts;
 
     setTimeout(() => {
-      console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+      console.log(
+        `Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`
+      );
       this.connect(path).catch((error) => {
         console.error("Reconnection failed:", error);
       });
@@ -202,4 +323,3 @@ class WebSocketService {
 }
 
 export const wsService = new WebSocketService();
-

@@ -11,6 +11,7 @@ export const API_ENDPOINTS = {
     VERIFY_OTP: "/api/v1/auth/verify-otp",
     GENERATE_OTP: "/api/v1/auth/generate-otp",
     SEND_OTP: "/api/v1/auth/generate-otp", // Alias for backward compatibility
+    CHANGE_PASSWORD: "/api/v1/auth/change-password",
   },
   // Queue endpoints
   QUEUE: {
@@ -18,6 +19,8 @@ export const API_ENDPOINTS = {
     POSITION: "/api/v1/queue/position",
     LEAVE: "/api/v1/queue/leave",
     CALL_NEXT: "/api/v1/queue/call-next",
+    COMPLETE: "/api/v1/queue/complete", // Mark customer as served/completed
+    LIST: "/api/v1/queue/shop", // Get queue list for a shop
     STATUS: "/queue/status",
     CONFIRM_ARRIVAL: "/queue/confirm-arrival",
     CANCEL: "/queue/cancel",
@@ -29,9 +32,9 @@ export const API_ENDPOINTS = {
     INFO: "/shop/info",
     DASHBOARD: "/shop/dashboard",
     CALL_NEXT: "/shop/call-next",
-    SKIP: "/shop/skip",
-    MARK_SERVED: "/shop/mark-served",
-    ADD_WALKIN: "/shop/add-walkin",
+    SKIP: "/api/v1/queue/skip",
+    MARK_SERVED: "/api/v1/queue/mark-served",
+    ADD_WALKIN: "/api/v1/queue/add-walkin",
     STATS: "/shop/stats",
   },
   // Analytics endpoints

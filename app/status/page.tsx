@@ -39,6 +39,8 @@ export default function StatusPage() {
   const [isLeaving, setIsLeaving] = useState(false);
   const [leaveSuccess, setLeaveSuccess] = useState(false);
   const [isConfirmingArrival, setIsConfirmingArrival] = useState(false);
+  const [isCompleting, setIsCompleting] = useState(false);
+  const [showThankYou, setShowThankYou] = useState(false);
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
   const [showAutoCancelWarning, setShowAutoCancelWarning] = useState(false);
   const shouldPollRef = useRef(true);
@@ -257,6 +259,68 @@ export default function StatusPage() {
       console.error("Error confirming arrival:", err);
     } finally {
       setIsConfirmingArrival(false);
+    }
+  };
+
+  // Handle complete (mark as grabbed table)
+  const handleComplete = async () => {
+    if (!shopId) return;
+
+    try {
+      setIsCompleting(true);
+      setError("");
+
+      const response = await api.post<{
+        shopId: string;
+        shopName: string;
+        userId: string;
+        userName: string;
+        userEmail: string;
+        position: number;
+        status: string;
+        totalInQueue: number;
+        peopleAhead: number;
+        estimatedWaitTimeMinutes: number;
+        joinedAt: string;
+        calledAt?: string;
+        servedAt?: string;
+        message: string;
+      }>(
+        `${API_ENDPOINTS.QUEUE.COMPLETE}/${shopId}`,
+        {},
+        true // requires auth
+      );
+
+      // Update queue data with response
+      setQueueData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status: response.data.status,
+        };
+      });
+
+      // Stop polling
+      shouldPollRef.current = false;
+
+      // Clear queue data from storage
+      storage.removeQueueData();
+      storage.removeQueueToken();
+      storage.removeShopId();
+
+      // Show thank you message
+      setShowThankYou(true);
+
+      // Redirect to home page after 3 seconds
+      setTimeout(() => {
+        router.push("/");
+      }, 3000);
+    } catch (err) {
+      const errorMessage = handleApiError(err);
+      setError(errorMessage);
+      console.error("Error completing service:", err);
+    } finally {
+      setIsCompleting(false);
     }
   };
 
@@ -511,6 +575,26 @@ export default function StatusPage() {
             </Button>
           )}
 
+          {/* Mark as Served Button - Show only when status is CALLED */}
+          {queueData.status === "CALLED" && (
+            <Button
+              onClick={handleComplete}
+              variant="primary"
+              fullWidth
+              className="bg-green-600 hover:bg-green-700"
+              disabled={isCompleting}
+            >
+              {isCompleting ? (
+                <>
+                  <LoadingSpinner size="sm" className="mr-2" />
+                  Processing...
+                </>
+              ) : (
+                "✓ Mark as Served"
+              )}
+            </Button>
+          )}
+
           <div className="flex gap-4">
             <Button
               onClick={() => router.push("/")}
@@ -572,6 +656,24 @@ export default function StatusPage() {
             </p>
             <p className="text-sm text-gray-500">
               Redirecting to shops page...
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Thank You Message - Show when service is completed */}
+      {showThankYou && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl p-8 shadow-2xl max-w-md mx-4 text-center animate-fade-in">
+            <div className="text-6xl mb-4 animate-bounce">🙏</div>
+            <h2 className="text-3xl font-bold text-gray-900 mb-2">
+              Thank You for Visiting!
+            </h2>
+            <p className="text-gray-600 mb-4">
+              We hope you enjoyed your experience at {queueData?.shopName || "our shop"}.
+            </p>
+            <p className="text-sm text-gray-500">
+              Redirecting to home page...
             </p>
           </div>
         </div>
